@@ -339,7 +339,10 @@ def sitemap_html():
 
 @app.route('/robots.txt')
 def robots():
-    txt = f"User-agent: *\\nAllow: /\\n\\nSitemap: {SITE_URL}/sitemap.xml\\nSitemap: {SITE_URL}/rss.xml\\n"
+    nl = chr(10)
+    txt = "User-agent: *" + nl + "Allow: /" + nl + nl
+    txt += "Sitemap: " + SITE_URL + "/sitemap.xml" + nl
+    txt += "Sitemap: " + SITE_URL + "/rss.xml" + nl
     return txt, 200, {'Content-Type': 'text/plain'}
 
 
