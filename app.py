@@ -307,10 +307,11 @@ def page_tv(slug):
 @app.route('/sitemap.xml')
 def sitemap_xml():
     rows = get_all_posts()
-    xml = '<?xml version="1.0" encoding="UTF-8"?>\\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\\n'
-    xml += f'<url><loc>{SITE_URL}/</loc><priority>1.0</priority></url>\\n'
+    xml = '<?xml version="1.0" encoding="UTF-8"?>'
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    xml += f'<url><loc>{SITE_URL}/</loc><priority>1.0</priority></url>'
     for slug, t, created in rows:
-        xml += f'<url><loc>{get_mirror_url(t, slug)}</loc><lastmod>{created[:10]}</lastmod><priority>0.8</priority></url>\\n'
+        xml += f'<url><loc>{get_mirror_url(t, slug)}</loc><lastmod>{created[:10]}</lastmod><priority>0.8</priority></url>'
     xml += '</urlset>'
     return Response(xml, mimetype='application/xml')
 
