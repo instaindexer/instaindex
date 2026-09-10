@@ -141,11 +141,14 @@ def google_verify(google_verify):
 
 @app.route('/')
 def home():
+    google_code = os.environ.get('GOOGLE_VERIFY', '')
+    meta_tag = f'<meta name="google-site-verification" content="{google_code}" />' if google_code else ''
     return render_template_string('''
 <!DOCTYPE html>
 <html lang="bn">
 <head>
 <meta charset="UTF-8">
+{{ meta_tag|safe }}
 <title>{{ name }} — Bulk Instagram Indexer</title>
 <style>
 body { font-family: system-ui, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; background: #f5f5f5; }
@@ -223,7 +226,7 @@ async function start() {
 </script>
 </body>
 </html>
-''', name=SITE_NAME)
+''', name=SITE_NAME, meta_tag=meta_tag)
 
 
 @app.route('/submit', methods=['POST'])
