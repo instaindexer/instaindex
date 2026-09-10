@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: instaindex
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: INDEXNOW_KEY
+        value: if2026trevomo9x8y7z6w5v4u3t2s1r0q
