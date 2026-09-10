@@ -133,6 +133,12 @@ def indexnow_key():
     return INDEXNOW_KEY, 200, {'Content-Type': 'text/plain'}
 
 
+@app.route('/google<google_verify>.html')
+def google_verify(google_verify):
+    code = os.environ.get('GOOGLE_VERIFY', '')
+    return f'google-site-verification: google{code}.html'
+
+
 @app.route('/')
 def home():
     return render_template_string('''
