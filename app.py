@@ -1,21 +1,21 @@
 import os
-import json
 import re
+import hashlib
 import sqlite3
 import threading
 import time
 import requests
 from datetime import datetime
-from flask import Flask, request, render_template_string, Response
+from flask import Flask, request, render_template_string, Response, abort
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
 
-SITE_DOMAIN = "instaindex.onrender.com"
+SITE_DOMAIN = "pdfindex.onrender.com"   # আপনার Render সাবডোমেইন
 SITE_URL = f"https://{SITE_DOMAIN}"
-SITE_NAME = "IndexFast"
-INDEXNOW_KEY = os.environ.get('INDEXNOW_KEY', 'if2026trevomo9x8y7z6w5v4u3t2s1r0q')
-DB_PATH = "posts.db"
+SITE_NAME = "LinkIndexFast"
+INDEXNOW_KEY = os.environ.get('INDEXNOW_KEY', 'lf2026pdf8x7y6z5w4v3u2t1s0r9q')
+DB_PATH = "links.db"
 
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
@@ -23,30 +23,32 @@ MASTODON_INSTANCE = os.environ.get('MASTODON_INSTANCE', 'https://mastodon.social
 MASTODON_TOKEN = os.environ.get('MASTODON_TOKEN', '')
 
 
+# ============ Database ============
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
-    conn.execute('''CREATE TABLE IF NOT EXISTS posts (
+    conn.execute('''CREATE TABLE IF NOT EXISTS links (
         slug TEXT PRIMARY KEY,
-        post_type TEXT,
-        insta_url TEXT,
+        target_url TEXT,
+        title TEXT,
         created_at TEXT
     )''')
     conn.commit()
     conn.close()
 
 
-def save_post(slug, post_type, insta_url):
+def save_link(slug, target_url, title=""):
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT OR REPLACE INTO posts (slug, post_type, insta_url, created_at) VALUES (?, ?, ?, ?)",
-        (slug, post_type, insta_url, datetime.utcnow().isoformat()))
+        "INSERT OR REPLACE INTO links (slug, target_url, title, created_at) VALUES (?, ?, ?, ?)",
+        (slug, target_url, title, datetime.utcnow().isoformat()))
     conn.commit()
     conn.close()
 
 
-def get_all_posts():
+def get_all_links():
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT slug, post_type, insta_url, created_at FROM posts ORDER BY created_at DESC").fetchall()
+    rows = conn.execute("SELECT slug, target_url, title, created_at FROM links ORDER BY created_at DESC").fetchall()
     conn.close()
     return rows
 
@@ -54,23 +56,15 @@ def get_all_posts():
 init_db()
 
 
-def extract_post_info(url):
-    m = re.search(r'instagram\.com/(p|reel|tv)/([A-Za-z0-9_-]+)/?', url)
-    if m:
-        return m.group(1), m.group(2)
-    return None, None
+def make_slug(url):
+    return hashlib.md5(url.encode()).hexdigest()[:12]
 
 
-def get_insta_url(t, slug):
-    return f"https://www.instagram.com/{t}/{slug}/"
+def get_wrapper_url(slug):
+    return f"{SITE_URL}/out/{slug}"
 
 
-def get_mirror_url(t, slug):
-    prefix = {'reel': 'r', 'tv': 'tv', 'p': 'c'}[t]
-    return f"{SITE_URL}/{prefix}/{slug}"
-
-
-# ============ Signal Blasters (সব Instagram URL-এর দিকে) ============
+# ============ Signal Blasters (wrapper URL-এর দিকে) ============
 
 def ping_indexnow(urls):
     if not urls:
@@ -87,7 +81,7 @@ def ping_indexnow(urls):
         print(f"IndexNow: {e}")
 
 
-def post_to_telegram(insta_url):
+def post_to_telegram(url):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -95,7 +89,7 @@ def post_to_telegram(insta_url):
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": f"✈️ Flight Deal\n{insta_url}",
+                "text": f"📄 Resource Link\n{url}",
                 "disable_web_page_preview": "false"
             },
             timeout=10
@@ -104,14 +98,14 @@ def post_to_telegram(insta_url):
         print(f"Telegram: {e}")
 
 
-def post_to_mastodon(insta_url):
+def post_to_mastodon(url):
     if not MASTODON_TOKEN:
         return
     try:
         requests.post(
             f"{MASTODON_INSTANCE}/api/v1/statuses",
             headers={"Authorization": f"Bearer {MASTODON_TOKEN}"},
-            json={"status": f"✈️ New Flight Deal: {insta_url}"},
+            json={"status": f"📄 New Resource: {url}"},
             timeout=10
         )
     except Exception as e:
@@ -141,31 +135,26 @@ def ping_pingomatic():
         print(f"Pingomatic: {e}")
 
 
-def blast_all(insta_urls):
-    """সব সিগন্যাল Instagram URL-এর দিকে (background thread)"""
+def blast_all(wrapper_urls):
+    """সব সিগন্যাল wrapper URL-এর দিকে (background thread)"""
     def run():
-        # ১. IndexNow — সব Instagram URL একসাথে
-        ping_indexnow(insta_urls[:10000])
-        
-        # ২. Telegram — প্রতিটি Instagram URL
-        for u in insta_urls[:200]:
+        ping_indexnow(wrapper_urls[:10000])
+
+        for u in wrapper_urls[:200]:
             post_to_telegram(u)
-            time.sleep(0.5)  # rate limit
-        
-        # ৩. Mastodon — প্রতিটি Instagram URL (৩০ সেকেন্ড delay)
-        for u in insta_urls[:50]:
+            time.sleep(0.5)
+
+        for u in wrapper_urls[:50]:
             post_to_mastodon(u)
             time.sleep(30)
-        
-        # ৪. Wayback — প্রথম ১০টা
-        for u in insta_urls[:10]:
+
+        for u in wrapper_urls[:10]:
             save_wayback(u)
-        
-        # ৫. Ping-O-Matic
+
         ping_pingomatic()
-        
-        print(f"[BLAST DONE] {len(insta_urls)} Instagram URLs")
-    
+
+        print(f"[BLAST DONE] {len(wrapper_urls)} wrapper URLs")
+
     threading.Thread(target=run, daemon=True).start()
 
 
@@ -189,17 +178,17 @@ def home():
     return render_template_string('''
 <!DOCTYPE html><html lang="bn"><head>
 <meta charset="UTF-8">{{ meta_tag|safe }}
-<title>{{ name }} — Instagram Indexer</title>
+<title>{{ name }} — PDF/Forum Link Indexer</title>
 <style>
 body{font-family:system-ui;max-width:900px;margin:40px auto;padding:20px;background:#f5f5f5}
 textarea{width:100%;padding:12px;font-family:monospace;font-size:14px;border:2px solid #ddd;border-radius:8px;box-sizing:border-box}
-button{padding:14px 40px;font-size:16px;background:#007bff;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600}
+button{padding:14px 40px;font-size:16px;background:#28a745;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:600}
 button:disabled{background:#999}
 #status{margin-top:24px;padding:16px;background:white;border-radius:8px;font-family:monospace;font-size:13px;max-height:500px;overflow-y:auto}
 .ok{color:#28a745}.err{color:#dc3545}.info{color:#007bff}
 </style></head><body>
-<h1>🚀 {{ name }}</h1>
-<p><b>Instagram URL পেস্ট করুন</b> — সিস্টেম সরাসরি Instagram URL-এ সিগন্যাল পাঠাবে:</p>
+<h1>📄 {{ name }} — PDF/Forum Link Indexer</h1>
+<p><b>PDF বা ফোরাম পোস্টের URL পেস্ট করুন</b> — সিস্টেম র‍্যাপার পেজ তৈরি করে সিগন্যাল পাঠাবে:</p>
 <ul>
 <li>📡 IndexNow → Bing/Yandex</li>
 <li>📱 Telegram channel</li>
@@ -207,8 +196,9 @@ button:disabled{background:#999}
 <li>📼 Wayback Machine</li>
 <li>📢 Ping-O-Matic</li>
 </ul>
-<textarea id="links" rows="15" placeholder="https://www.instagram.com/p/ABC123/
-https://www.instagram.com/reel/XYZ789/"></textarea>
+<textarea id="links" rows="15" placeholder="https://example.com/document.pdf
+https://forum.example.com/thread/12345
+https://example.com/blog/post-title"></textarea>
 <br><br><button id="btn" onclick="start()">Send Signals</button>
 <div id="status"></div>
 <script>
@@ -217,10 +207,10 @@ async function start() {
     const links = document.getElementById('links').value.trim().split('\\n').map(l=>l.trim()).filter(l=>l);
     const status = document.getElementById('status');
     if (links.length === 0) { status.innerHTML = '<span class="err">⚠️ লিংক নেই</span>'; btn.disabled = false; return; }
-    status.innerHTML = `<span class="info">📥 মোট ${links.length} টি Instagram URL</span><br><br>`;
+    status.innerHTML = `<span class="info">📥 মোট ${links.length} টি লিংক</span><br><br>`;
     let ok = 0, fail = 0;
     for (let i = 0; i < links.length; i++) {
-        const fd = new FormData(); fd.append('insta_url', links[i]);
+        const fd = new FormData(); fd.append('target_url', links[i]);
         try {
             const r = await fetch('/submit', { method: 'POST', body: fd });
             if (r.ok) { ok++; status.innerHTML += `<span class="ok">✅ ${i+1}. ${links[i]}</span><br>`; }
@@ -229,7 +219,7 @@ async function start() {
         status.scrollTop = status.scrollHeight;
         await new Promise(r => setTimeout(r, 100));
     }
-    status.innerHTML += `<br><span class="info">📡 Instagram URL-এ সিগন্যাল পাঠানো হচ্ছে...</span><br>`;
+    status.innerHTML += `<br><span class="info">📡 র‍্যাপার URL-এ সিগন্যাল পাঠানো হচ্ছে...</span><br>`;
     try { const br = await fetch('/blast', { method: 'POST' }); const bt = await br.text(); status.innerHTML += `<span class="info">${bt}</span><br>`; } catch (e) {}
     status.innerHTML += `<br><b>🎉 শেষ! সফল: ${ok}, ব্যর্থ: ${fail}</b><br>`;
     btn.disabled = false;
@@ -240,77 +230,91 @@ async function start() {
 
 @app.route('/submit', methods=['POST'])
 def submit():
-    insta_url = request.form.get('insta_url', '').strip()
-    t, slug = extract_post_info(insta_url)
-    if not slug:
-        return "Invalid Instagram URL", 400
-    save_post(slug, t, insta_url)
+    target_url = request.form.get('target_url', '').strip()
+    if not target_url.startswith('http'):
+        return "Invalid URL (must start with http/https)", 400
+    slug = make_slug(target_url)
+    save_link(slug, target_url)
     return "OK", 200
 
 
 @app.route('/blast', methods=['POST'])
 def blast():
-    rows = get_all_posts()
-    insta_urls = [row[2] for row in rows[:10000]]  # insta_url column
-    blast_all(insta_urls)
-    return f"✅ {len(insta_urls)} Instagram URL-এ সিগন্যাল পাঠানো হয়েছে (Telegram + Mastodon + IndexNow + Wayback + Ping)", 200
+    rows = get_all_links()
+    wrapper_urls = [get_wrapper_url(r[0]) for r in rows[:10000]]
+    blast_all(wrapper_urls)
+    return f"✅ {len(wrapper_urls)} র‍্যাপার URL-এ সিগন্যাল পাঠানো হয়েছে (Telegram + Mastodon + IndexNow + Wayback + Ping)", 200
 
 
-# ============ Mirror Pages (backup) ============
+# ============ Wrapper Pages (PDF/Forum) ============
 
-def render_post_page(t, slug):
-    insta_url = get_insta_url(t, slug)
-    mirror_url = get_mirror_url(t, slug)
-    return f'''<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><title>Instagram {t} - {slug}</title>
-<link rel="canonical" href="{mirror_url}" />
-<meta http-equiv="refresh" content="2; url={insta_url}" />
-</head><body style="font-family:system-ui;padding:40px;text-align:center;">
-<h1>Instagram {t}: {slug}</h1>
-<p>Redirecting to Instagram...</p>
-<p><a href="{insta_url}">👉 Instagram এ যান</a></p>
-</body></html>'''
-
-
-@app.route('/c/<slug>')
-def page_c(slug): return render_post_page('p', slug)
-
-@app.route('/r/<slug>')
-def page_r(slug): return render_post_page('reel', slug)
-
-@app.route('/tv/<slug>')
-def page_tv(slug): return render_post_page('tv', slug)
+@app.route('/out/<slug>')
+def wrapper_page(slug):
+    rows = get_all_links()
+    match = next((r for r in rows if r[0] == slug), None)
+    if not match:
+        abort(404)
+    target_url = match[1]
+    title = match[2] or "External Resource"
+    return render_template_string('''<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ title }}</title>
+<meta name="robots" content="index, follow">
+<meta name="description" content="This page shares an external resource link. Click to visit the original source.">
+<style>
+body{font-family:system-ui,Arial;max-width:800px;margin:40px auto;padding:20px;line-height:1.6;color:#222}
+h1{color:#111}
+a{color:#0066cc;word-break:break-all}
+.box{background:#f8f9fa;padding:20px;border-radius:8px;border-left:4px solid #28a745;margin:20px 0}
+</style>
+</head>
+<body>
+<h1>বাহ্যিক রিসোর্স / External Resource</h1>
+<p>এই পেজটি নিচের রিসোর্স লিংকটি শেয়ার করার জন্য তৈরি করা হয়েছে। আপনি নিচের লিংকে ক্লিক করে মূল সোর্সে যেতে পারেন।</p>
+<div class="box">
+<p><b>🔗 লিংক:</b><br>
+<a href="{{ target }}" rel="noopener" target="_blank">{{ target }}</a></p>
+</div>
+<p>এই পেজটি স্বয়ংক্রিয়ভাবে তৈরি হয়েছে এবং কোনো ব্যক্তিগত তথ্য সংগ্রহ করে না। লিংকটি যদি আপনার হয় এবং আপনি এটি সরাতে চান, তবে যোগাযোগ করুন।</p>
+<hr>
+<p style="color:#888;font-size:14px;">Generated by {{ site }}</p>
+</body>
+</html>''', target=target_url, title=title, site=SITE_NAME)
 
 
 # ============ Sitemap & Misc ============
 
 @app.route('/sitemap.xml')
 def sitemap_xml():
-    rows = get_all_posts()
+    rows = get_all_links()
     xml = '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
     xml += f'<url><loc>{SITE_URL}/</loc><priority>1.0</priority></url>'
-    for slug, t, _, created in rows:
-        xml += f'<url><loc>{get_mirror_url(t, slug)}</loc><lastmod>{created[:10]}</lastmod></url>'
+    for slug, _, _, created in rows:
+        xml += f'<url><loc>{get_wrapper_url(slug)}</loc><lastmod>{created[:10]}</lastmod></url>'
     xml += '</urlset>'
     return Response(xml, mimetype='application/xml')
 
 
 @app.route('/rss.xml')
 def rss():
-    rows = get_all_posts()[:50]
+    rows = get_all_links()[:50]
     items = ""
-    for slug, t, _, created in rows:
-        url = get_mirror_url(t, slug)
-        items += f'<item><title>Instagram {t} - {slug}</title><link>{url}</link><guid>{url}</guid><pubDate>{created}</pubDate></item>'
+    for slug, target, title, created in rows:
+        url = get_wrapper_url(slug)
+        items += f'<item><title>{title or "Resource"}</title><link>{url}</link><guid>{url}</guid><pubDate>{created}</pubDate></item>'
     xml = f'<?xml version="1.0"?><rss version="2.0"><channel><title>{SITE_NAME}</title><link>{SITE_URL}/</link>{items}</channel></rss>'
     return Response(xml, mimetype='application/rss+xml')
 
 
 @app.route('/sitemap.html')
 def sitemap_html():
-    rows = get_all_posts()
-    links = "".join(f'<li><a href="{r[2]}">{r[2]}</a></li>' for r in rows)
-    return f'<h1>সব Instagram URL ({len(rows)})</h1><ul>{links}</ul><p><a href="/">← হোম</a></p>'
+    rows = get_all_links()
+    links = "".join(
+        f'<li><a href="{get_wrapper_url(r[0])}">{get_wrapper_url(r[0])}</a> → <a href="{r[1]}" target="_blank">{r[1]}</a></li>'
+        for r in rows)
+    return f'<h1>সব র‍্যাপার URL ({len(rows)})</h1><ul>{links}</ul><p><a href="/">← হোম</a></p>'
 
 
 @app.route('/robots.txt')
