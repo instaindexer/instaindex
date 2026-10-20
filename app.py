@@ -4,6 +4,7 @@ import hashlib
 import sqlite3
 import threading
 import time
+import base64
 import requests
 from datetime import datetime
 from flask import Flask, request, render_template_string, Response, abort
@@ -70,7 +71,48 @@ def get_wrapper_url(slug):
     return f"{SITE_URL}/out/{slug}"
 
 
-# ============ Power Signal Engines ============
+# ============ Power Signal & Backlink Engines ============
+
+def update_github_backlinks(rows):
+    """GitHub repository-te automatically BACKLINKS.md file update kora"""
+    github_token = os.environ.get('GITHUB_TOKEN', '')
+    repo_name = os.environ.get('GITHUB_REPO', '') # e.g., 'instaindexer/instaindex'
+    
+    if not github_token or not repo_name:
+        print("[GitHub Backlinks Skipped] GITHUB_TOKEN or GITHUB_REPO not configured.")
+        return
+        
+    md_content = "# Auto Generated SEO Backlinks\n\n"
+    for slug, target, title, created in rows[:500]:
+        w_url = get_wrapper_url(slug)
+        md_content += f"- [{title or target}]({w_url}) - Indexed on {created}\n"
+        
+    url = f"https://api.github.com/repos/{repo_name}/contents/BACKLINKS.md"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "vnd.github+json"
+    }
+    
+    try:
+        get_res = requests.get(url, headers=headers)
+        sha = get_res.json().get('sha') if get_res.status_code == 200 else None
+        
+        payload = {
+            "message": "Auto-update SEO backlinks [skip ci]",
+            "content": base64.b64encode(md_content.encode()).decode(),
+            "branch": "main"
+        }
+        if sha:
+            payload["sha"] = sha
+            
+        put_res = requests.put(url, json=payload, headers=headers, timeout=15)
+        if put_res.status_code in [200, 201]:
+            print("[GitHub Backlinks] BACKLINKS.md successfully updated!")
+        else:
+            print(f"[GitHub Backlinks Error] Status code: {put_res.status_code}, Response: {put_res.text}")
+    except Exception as e:
+        print(f"[GitHub Backlink Error] {e}")
+
 
 def send_google_indexing_api(wrapper_url):
     """Google Indexing API diye sorasori Google-er crawler-ke Instant Indexing signal pathano"""
@@ -157,27 +199,30 @@ def ping_rss_services():
             pass
 
 
-def blast_all(wrapper_urls):
+def blast_all(wrapper_urls, all_rows):
     """Shob signal background thread-e process kora"""
     def run():
-        # 1. Direct Google Cloud Indexing API Hit
+        # 1. Update GitHub Backlinks (BACKLINKS.md)
+        update_github_backlinks(all_rows)
+
+        # 2. Direct Google Cloud Indexing API Hit
         for u in wrapper_urls[:200]:  # Daily Free Quota: 200 URLs
             send_google_indexing_api(u)
             time.sleep(0.3)
 
-        # 2. IndexNow (Bing/Yandex Instant Index)
+        # 3. IndexNow (Bing/Yandex Instant Index)
         ping_indexnow(wrapper_urls[:10000])
 
-        # 3. Telegram Broadcast
+        # 4. Telegram Broadcast
         for u in wrapper_urls[:100]:
             post_to_telegram(u)
             time.sleep(0.3)
 
-        # 4. Wayback Archive Engine
+        # 5. Wayback Archive Engine
         for u in wrapper_urls[:10]:
             save_wayback(u)
 
-        # 5. RSS Feed Ping Engine
+        # 6. RSS Feed Ping Engine
         ping_rss_services()
 
         print(f"[BLAST COMPLETED] Total Processed: {len(wrapper_urls)} URLs")
@@ -217,7 +262,7 @@ button:disabled{background:#999}
 <h1>⚡ {{ name }} — Premium Link Indexer</h1>
 <p><b>Instagram, PDF, Netlify, Google Drive ba jekono link ekshathe paste korun:</b></p>
 <ul>
-<li>🚀 <b>Google Indexing API:</b> Google-e fast indexing signal</li>
+<li>🚀 <b>Google Indexing API & GitHub Backlinks:</b> Fast indexing & High DA backlink generation</li>
 <li>📡 <b>IndexNow:</b> Bing & Yandex indexing</li>
 <li>📢 <b>RSS Multi-RPC Ping:</b> Feed bot crawler alert</li>
 <li>📼 <b>Wayback Machine & Telegram Feed</b></li>
@@ -246,7 +291,7 @@ async function start() {
         status.scrollTop = status.scrollHeight;
         await new Promise(r => setTimeout(r, 100));
     }
-    status.innerHTML += `<br><span class="info">⚡ Google Cloud API & Multi-RPC Signals pathano hocche...</span><br>`;
+    status.innerHTML += `<br><span class="info">⚡ GitHub BACKLINKS.md & Google Cloud API Signals pathano hocche...</span><br>`;
     try { const br = await fetch('/blast', { method: 'POST' }); const bt = await br.text(); status.innerHTML += `<span class="info">${bt}</span><br>`; } catch (e) {}
     status.innerHTML += `<br><b>🎉 Process shomponno! Shoful: ${ok}, Byortho: ${fail}</b><br>`;
     btn.disabled = false;
@@ -269,8 +314,8 @@ def submit():
 def blast():
     rows = get_all_links()
     wrapper_urls = [get_wrapper_url(r[0]) for r in rows[:10000]]
-    blast_all(wrapper_urls)
-    return f"✅ {len(wrapper_urls)} ti wrapper URL-e Google Indexing API + RSS RPC Signals pathano hoyeche!", 200
+    blast_all(wrapper_urls, rows)
+    return f"✅ {len(wrapper_urls)} ti wrapper URL-e GitHub Backlinks + Google Indexing API Signals pathano hoyeche!", 200
 
 
 # ============ Wrapper Pages ============
