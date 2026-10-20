@@ -8,10 +8,14 @@ import requests
 from datetime import datetime
 from flask import Flask, request, render_template_string, Response, abort
 
+# Google Indexing API Libraries
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
 app = Flask(__name__)
 app.url_map.strict_slashes = False
 
-SITE_DOMAIN = "pdfindex.onrender.com"   # আপনার Render সাবডোমেইন
+SITE_DOMAIN = os.environ.get('SITE_DOMAIN', 'pdfindex.onrender.com')
 SITE_URL = f"https://{SITE_DOMAIN}"
 SITE_NAME = "LinkIndexFast"
 INDEXNOW_KEY = os.environ.get('INDEXNOW_KEY', 'lf2026pdf8x7y6z5w4v3u2t1s0r9q')
@@ -19,8 +23,10 @@ DB_PATH = "links.db"
 
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
-MASTODON_INSTANCE = os.environ.get('MASTODON_INSTANCE', 'https://mastodon.social')
-MASTODON_TOKEN = os.environ.get('MASTODON_TOKEN', '')
+
+# Google Service Account Config
+SCOPES = ["https://www.googleapis.com/auth/indexing"]
+SERVICE_ACCOUNT_FILE = os.environ.get('GOOGLE_JSON_KEY_PATH', 'service_account.json')
 
 
 # ============ Database ============
@@ -64,7 +70,27 @@ def get_wrapper_url(slug):
     return f"{SITE_URL}/out/{slug}"
 
 
-# ============ Signal Blasters (wrapper URL-এর দিকে) ============
+# ============ Power Signal Engines ============
+
+def send_google_indexing_api(wrapper_url):
+    """Google Indexing API diye sorasori Google-er crawler-ke Instant Indexing signal pathano"""
+    if not os.path.exists(SERVICE_ACCOUNT_FILE):
+        print(f"[Google API Skipped] {SERVICE_ACCOUNT_FILE} file paowa jayni!")
+        return
+    try:
+        credentials = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
+        service = build('indexing', 'v3', credentials=credentials)
+        body = {
+            "url": wrapper_url,
+            "type": "URL_UPDATED"
+        }
+        response = service.urlNotifications().publish(body=body).execute()
+        print(f"[Google API Success] Indexed: {wrapper_url}")
+    except Exception as e:
+        print(f"[Google API Error] {e}")
+
 
 def ping_indexnow(urls):
     if not urls:
@@ -76,9 +102,9 @@ def ping_indexnow(urls):
             "keyLocation": f"{SITE_URL}/{INDEXNOW_KEY}.txt",
             "urlList": urls if isinstance(urls, list) else [urls]
         }, timeout=15)
-        print(f"IndexNow: {r.status_code}")
+        print(f"[IndexNow Status] {r.status_code}")
     except Exception as e:
-        print(f"IndexNow: {e}")
+        print(f"[IndexNow Error] {e}")
 
 
 def post_to_telegram(url):
@@ -89,71 +115,72 @@ def post_to_telegram(url):
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             data={
                 "chat_id": TELEGRAM_CHAT_ID,
-                "text": f"📄 Resource Link\n{url}",
+                "text": f"🚀 New Indexed Link:\n{url}",
                 "disable_web_page_preview": "false"
             },
             timeout=10
         )
     except Exception as e:
-        print(f"Telegram: {e}")
-
-
-def post_to_mastodon(url):
-    if not MASTODON_TOKEN:
-        return
-    try:
-        requests.post(
-            f"{MASTODON_INSTANCE}/api/v1/statuses",
-            headers={"Authorization": f"Bearer {MASTODON_TOKEN}"},
-            json={"status": f"📄 New Resource: {url}"},
-            timeout=10
-        )
-    except Exception as e:
-        print(f"Mastodon: {e}")
+        print(f"[Telegram Error] {e}")
 
 
 def save_wayback(url):
     try:
-        requests.get(f"https://web.archive.org/save/{url}", timeout=40)
+        requests.get(f"https://web.archive.org/save/{url}", timeout=30)
     except Exception as e:
-        print(f"Wayback: {e}")
+        print(f"[Wayback Error] {e}")
 
 
-def ping_pingomatic():
-    try:
-        requests.post("https://pingomatic.com/ping/", data={
-            "title": SITE_NAME, "blogurl": SITE_URL,
-            "rssurl": f"{SITE_URL}/rss.xml",
-            "chk_weblogscom": "on", "chk_blogs": "on", "chk_feedburner": "on",
-            "chk_google": "on", "chk_technorati": "on", "chk_bloglines": "on",
-            "chk_newsgator": "on", "chk_myyahoo": "on", "chk_pubsubcom": "on",
-            "chk_blogdigger": "on", "chk_weblogalot": "on", "chk_newsisfree": "on",
-            "chk_topicexchange": "on", "chk_tailrank": "on", "chk_syndic8": "on",
-            "chk_icerocket": "on", "chk_newsburst": "on", "chk_feedster": "on",
-        }, timeout=20)
-    except Exception as e:
-        print(f"Pingomatic: {e}")
+def ping_rss_services():
+    """Dynamic RSS Feed-ke powerful RPC Ping Server-e notify kora"""
+    rss_url = f"{SITE_URL}/rss.xml"
+    rpc_servers = [
+        "http://rpc.pingomatic.com/",
+        "http://rpc.technorati.com/rpc/ping",
+        "http://ping.feedburner.com",
+        "http://blogsearch.google.com/ping/RPC2"
+    ]
+    headers = {'Content-Type': 'text/xml'}
+    xml_payload = f"""<?xml version="1.0"?>
+    <methodCall>
+      <methodName>weblogUpdates.ping</methodName>
+      <params>
+        <param><value>{SITE_NAME}</value></param>
+        <param><value>{SITE_URL}</value></param>
+      </params>
+    </methodCall>"""
+
+    for server in rpc_servers:
+        try:
+            requests.post(server, data=xml_payload, headers=headers, timeout=10)
+        except Exception:
+            pass
 
 
 def blast_all(wrapper_urls):
-    """সব সিগন্যাল wrapper URL-এর দিকে (background thread)"""
+    """Shob signal background thread-e process kora"""
     def run():
+        # 1. Direct Google Cloud Indexing API Hit
+        for u in wrapper_urls[:200]:  # Daily Free Quota: 200 URLs
+            send_google_indexing_api(u)
+            time.sleep(0.3)
+
+        # 2. IndexNow (Bing/Yandex Instant Index)
         ping_indexnow(wrapper_urls[:10000])
 
-        for u in wrapper_urls[:200]:
+        # 3. Telegram Broadcast
+        for u in wrapper_urls[:100]:
             post_to_telegram(u)
-            time.sleep(0.5)
+            time.sleep(0.3)
 
-        for u in wrapper_urls[:50]:
-            post_to_mastodon(u)
-            time.sleep(30)
-
+        # 4. Wayback Archive Engine
         for u in wrapper_urls[:10]:
             save_wayback(u)
 
-        ping_pingomatic()
+        # 5. RSS Feed Ping Engine
+        ping_rss_services()
 
-        print(f"[BLAST DONE] {len(wrapper_urls)} wrapper URLs")
+        print(f"[BLAST COMPLETED] Total Processed: {len(wrapper_urls)} URLs")
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -178,7 +205,7 @@ def home():
     return render_template_string('''
 <!DOCTYPE html><html lang="bn"><head>
 <meta charset="UTF-8">{{ meta_tag|safe }}
-<title>{{ name }} — PDF/Forum Link Indexer</title>
+<title>{{ name }} — Premium Link & Content Indexer</title>
 <style>
 body{font-family:system-ui;max-width:900px;margin:40px auto;padding:20px;background:#f5f5f5}
 textarea{width:100%;padding:12px;font-family:monospace;font-size:14px;border:2px solid #ddd;border-radius:8px;box-sizing:border-box}
@@ -187,27 +214,27 @@ button:disabled{background:#999}
 #status{margin-top:24px;padding:16px;background:white;border-radius:8px;font-family:monospace;font-size:13px;max-height:500px;overflow-y:auto}
 .ok{color:#28a745}.err{color:#dc3545}.info{color:#007bff}
 </style></head><body>
-<h1>📄 {{ name }} — PDF/Forum Link Indexer</h1>
-<p><b>PDF বা ফোরাম পোস্টের URL পেস্ট করুন</b> — সিস্টেম র‍্যাপার পেজ তৈরি করে সিগন্যাল পাঠাবে:</p>
+<h1>⚡ {{ name }} — Premium Link Indexer</h1>
+<p><b>Instagram, PDF, Netlify, Google Drive ba jekono link ekshathe paste korun:</b></p>
 <ul>
-<li>📡 IndexNow → Bing/Yandex</li>
-<li>📱 Telegram channel</li>
-<li>🐘 Mastodon</li>
-<li>📼 Wayback Machine</li>
-<li>📢 Ping-O-Matic</li>
+<li>🚀 <b>Google Indexing API:</b> Google-e fast indexing signal</li>
+<li>📡 <b>IndexNow:</b> Bing & Yandex indexing</li>
+<li>📢 <b>RSS Multi-RPC Ping:</b> Feed bot crawler alert</li>
+<li>📼 <b>Wayback Machine & Telegram Feed</b></li>
 </ul>
-<textarea id="links" rows="15" placeholder="https://example.com/document.pdf
-https://forum.example.com/thread/12345
-https://example.com/blog/post-title"></textarea>
-<br><br><button id="btn" onclick="start()">Send Signals</button>
+<textarea id="links" rows="15" placeholder="https://www.instagram.com/p/...
+https://deft-lokum-1718c2.netlify.app
+https://drive.google.com/file/d/.../view
+https://example.com/document.pdf"></textarea>
+<br><br><button id="btn" onclick="start()">Send High-Power Signals</button>
 <div id="status"></div>
 <script>
 async function start() {
     const btn = document.getElementById('btn'); btn.disabled = true;
     const links = document.getElementById('links').value.trim().split('\\n').map(l=>l.trim()).filter(l=>l);
     const status = document.getElementById('status');
-    if (links.length === 0) { status.innerHTML = '<span class="err">⚠️ লিংক নেই</span>'; btn.disabled = false; return; }
-    status.innerHTML = `<span class="info">📥 মোট ${links.length} টি লিংক</span><br><br>`;
+    if (links.length === 0) { status.innerHTML = '<span class="err">⚠️ Kono link paowa jayni</span>'; btn.disabled = false; return; }
+    status.innerHTML = `<span class="info">📥 Mot ${links.length} ti link process kora hocche...</span><br><br>`;
     let ok = 0, fail = 0;
     for (let i = 0; i < links.length; i++) {
         const fd = new FormData(); fd.append('target_url', links[i]);
@@ -219,9 +246,9 @@ async function start() {
         status.scrollTop = status.scrollHeight;
         await new Promise(r => setTimeout(r, 100));
     }
-    status.innerHTML += `<br><span class="info">📡 র‍্যাপার URL-এ সিগন্যাল পাঠানো হচ্ছে...</span><br>`;
+    status.innerHTML += `<br><span class="info">⚡ Google Cloud API & Multi-RPC Signals pathano hocche...</span><br>`;
     try { const br = await fetch('/blast', { method: 'POST' }); const bt = await br.text(); status.innerHTML += `<span class="info">${bt}</span><br>`; } catch (e) {}
-    status.innerHTML += `<br><b>🎉 শেষ! সফল: ${ok}, ব্যর্থ: ${fail}</b><br>`;
+    status.innerHTML += `<br><b>🎉 Process shomponno! Shoful: ${ok}, Byortho: ${fail}</b><br>`;
     btn.disabled = false;
 }
 </script></body></html>
@@ -232,7 +259,7 @@ async function start() {
 def submit():
     target_url = request.form.get('target_url', '').strip()
     if not target_url.startswith('http'):
-        return "Invalid URL (must start with http/https)", 400
+        return "Invalid URL", 400
     slug = make_slug(target_url)
     save_link(slug, target_url)
     return "OK", 200
@@ -243,10 +270,10 @@ def blast():
     rows = get_all_links()
     wrapper_urls = [get_wrapper_url(r[0]) for r in rows[:10000]]
     blast_all(wrapper_urls)
-    return f"✅ {len(wrapper_urls)} র‍্যাপার URL-এ সিগন্যাল পাঠানো হয়েছে (Telegram + Mastodon + IndexNow + Wayback + Ping)", 200
+    return f"✅ {len(wrapper_urls)} ti wrapper URL-e Google Indexing API + RSS RPC Signals pathano hoyeche!", 200
 
 
-# ============ Wrapper Pages (PDF/Forum) ============
+# ============ Wrapper Pages ============
 
 @app.route('/out/<slug>')
 def wrapper_page(slug):
@@ -271,20 +298,30 @@ a{color:#0066cc;word-break:break-all}
 </style>
 </head>
 <body>
-<h1>বাহ্যিক রিসোর্স / External Resource</h1>
-<p>এই পেজটি নিচের রিসোর্স লিংকটি শেয়ার করার জন্য তৈরি করা হয়েছে। আপনি নিচের লিংকে ক্লিক করে মূল সোর্সে যেতে পারেন।</p>
+<h1>External Resource</h1>
+<p>This page shares an external link. You can visit the original source below:</p>
 <div class="box">
-<p><b>🔗 লিংক:</b><br>
+<p><b>🔗 Link:</b><br>
 <a href="{{ target }}" rel="noopener" target="_blank">{{ target }}</a></p>
 </div>
-<p>এই পেজটি স্বয়ংক্রিয়ভাবে তৈরি হয়েছে এবং কোনো ব্যক্তিগত তথ্য সংগ্রহ করে না। লিংকটি যদি আপনার হয় এবং আপনি এটি সরাতে চান, তবে যোগাযোগ করুন।</p>
 <hr>
 <p style="color:#888;font-size:14px;">Generated by {{ site }}</p>
 </body>
 </html>''', target=target_url, title=title, site=SITE_NAME)
 
 
-# ============ Sitemap & Misc ============
+# ============ Dynamic RSS & Sitemap ============
+
+@app.route('/rss.xml')
+def rss():
+    rows = get_all_links()[:100]
+    items = ""
+    for slug, target, title, created in rows:
+        url = get_wrapper_url(slug)
+        items += f'<item><title>{title or "Resource"}</title><link>{url}</link><guid>{url}</guid><pubDate>{created}</pubDate></item>'
+    xml = f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>{SITE_NAME}</title><link>{SITE_URL}/</link>{items}</channel></rss>'
+    return Response(xml, mimetype='application/rss+xml')
+
 
 @app.route('/sitemap.xml')
 def sitemap_xml():
@@ -295,34 +332,6 @@ def sitemap_xml():
         xml += f'<url><loc>{get_wrapper_url(slug)}</loc><lastmod>{created[:10]}</lastmod></url>'
     xml += '</urlset>'
     return Response(xml, mimetype='application/xml')
-
-
-@app.route('/rss.xml')
-def rss():
-    rows = get_all_links()[:50]
-    items = ""
-    for slug, target, title, created in rows:
-        url = get_wrapper_url(slug)
-        items += f'<item><title>{title or "Resource"}</title><link>{url}</link><guid>{url}</guid><pubDate>{created}</pubDate></item>'
-    xml = f'<?xml version="1.0"?><rss version="2.0"><channel><title>{SITE_NAME}</title><link>{SITE_URL}/</link>{items}</channel></rss>'
-    return Response(xml, mimetype='application/rss+xml')
-
-
-@app.route('/sitemap.html')
-def sitemap_html():
-    rows = get_all_links()
-    links = "".join(
-        f'<li><a href="{get_wrapper_url(r[0])}">{get_wrapper_url(r[0])}</a> → <a href="{r[1]}" target="_blank">{r[1]}</a></li>'
-        for r in rows)
-    return f'<h1>সব র‍্যাপার URL ({len(rows)})</h1><ul>{links}</ul><p><a href="/">← হোম</a></p>'
-
-
-@app.route('/robots.txt')
-def robots():
-    nl = chr(10)
-    txt = "User-agent: *" + nl + "Allow: /" + nl + nl
-    txt += "Sitemap: " + SITE_URL + "/sitemap.xml" + nl
-    return txt, 200, {'Content-Type': 'text/plain'}
 
 
 if __name__ == '__main__':
